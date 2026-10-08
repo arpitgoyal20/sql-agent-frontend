@@ -1,0 +1,181 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Palette (UI_SPEC §28) as RGB channels. Dark is the default; `html:not(.dark)` is the light
+ * theme, tuned for WCAG AA. `accent` is the brand #7C5CFC for rings, markers and borders;
+ * `accent-strong` is a slightly deeper shade for filled buttons with white text (5.2:1), and
+ * `accent-fg` is the accent as text (≥ 4.5:1 on every surface).
+ */
+:root {
+  --bg: 11 13 16; /* #0B0D10 */
+  --surface: 17 21 26; /* #11151A */
+  --elevated: 23 28 34; /* #171C22 */
+  --border: 37 43 51; /* #252B33 */
+  --text: 245 247 250; /* #F5F7FA */
+  --muted: 139 148 158; /* #8B949E */
+  --success: 63 185 80; /* #3FB950 */
+  --warning: 210 153 34; /* #D29922 */
+  --error: 248 81 73; /* #F85149 */
+  --accent: 124 92 252; /* #7C5CFC */
+  --accent-strong: 110 76 245; /* #6E4CF5 */
+  --accent-fg: 160 139 255; /* #A08BFF */
+
+  /* SQL highlighting */
+  --sql-keyword: 160 139 255;
+  --sql-function: 121 192 255;
+  --sql-string: 126 231 135;
+  --sql-number: 255 166 87;
+  --sql-comment: 110 118 129;
+  --sql-punct: 139 148 158;
+  --sql-text: 230 237 243;
+}
+
+html:not(.dark) {
+  --bg: 246 247 249; /* #F6F7F9 */
+  --surface: 255 255 255;
+  --elevated: 241 243 245; /* #F1F3F5 */
+  --border: 217 222 228; /* #D9DEE4 */
+  --text: 17 21 26; /* #11151A */
+  --muted: 87 96 106; /* #57606A */
+  --success: 26 127 55; /* #1A7F37 */
+  --warning: 154 103 0; /* #9A6700 */
+  --error: 207 34 46; /* #CF222E */
+  --accent: 124 92 252;
+  --accent-strong: 110 76 245;
+  --accent-fg: 91 63 214; /* #5B3FD6 */
+
+  --sql-keyword: 91 63 214;
+  --sql-function: 9 105 218;
+  --sql-string: 17 99 41;
+  --sql-number: 149 56 0;
+  --sql-comment: 106 115 125;
+  --sql-punct: 87 96 106;
+  --sql-text: 31 35 40;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    /* clip (not hidden): programmatic scrollIntoView must never shift the app shell. */
+    overflow: clip;
+  }
+
+  body {
+    @apply bg-bg font-sans text-base text-fg antialiased;
+    font-feature-settings:
+      'cv11' 1,
+      'ss01' 1;
+  }
+
+  /* One visible focus style for every interactive element, in both themes. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+  }
+
+  input:focus-visible,
+  textarea:focus-visible {
+    outline-offset: 0;
+  }
+
+  /* SQL must read literally: no `>=` → `⩾` ligatures. */
+  .font-mono,
+  code,
+  pre,
+  kbd {
+    font-variant-ligatures: none;
+  }
+
+  ::selection {
+    background: rgb(var(--accent) / 0.35);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--border)) transparent;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex h-7 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-sm font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent-strong text-white hover:bg-accent-strong/90;
+  }
+
+  .btn-secondary {
+    @apply btn border border-line bg-surface text-fg hover:bg-elevated;
+  }
+
+  .btn-ghost {
+    @apply btn text-muted hover:bg-elevated hover:text-fg;
+  }
+
+  .btn-icon {
+    @apply inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-elevated hover:text-fg disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .card {
+    @apply rounded-lg border border-line bg-surface;
+  }
+
+  .section-label {
+    @apply text-2xs font-semibold uppercase tracking-[0.08em] text-muted;
+  }
+
+  .menu {
+    @apply z-50 min-w-[200px] rounded-lg border border-line bg-elevated p-1 shadow-xl shadow-black/20;
+  }
+
+  .menu-item {
+    @apply flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-fg transition-colors hover:bg-bg/60 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent;
+  }
+
+  .input {
+    @apply h-8 w-full rounded-md border border-line bg-bg px-2.5 text-sm text-fg placeholder:text-muted focus:border-accent focus:outline-none;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded bg-elevated;
+  }
+}
+
+@layer utilities {
+  .toast-in {
+    animation: toast-in 160ms ease-out;
+  }
+
+  .fade-in {
+    animation: fade-in 160ms ease-out;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

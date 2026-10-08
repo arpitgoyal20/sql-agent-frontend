@@ -1,0 +1,7 @@
+dist
+node_modules
+coverage
+package-lock.json
+REQUIREMENTS.md
+docs/API_ADDITIONS.md
+docs/UI_SPEC.md
