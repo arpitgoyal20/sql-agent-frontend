@@ -5,7 +5,7 @@ work: live agent activity, validated read-only SQL with a validation checklist a
 inspector, results you can page through and export, and a plain-English "why this query?"
 explanation — streamed from the backend over Server-Sent Events.
 
-**Live demo:** https://YOUR-VERCEL-DOMAIN.vercel.app — no login needed, just open it and ask.
+**Live demo:** https://sql-agent-frontend-delta.vercel.app — no login needed, just open it and ask. Backend: https://sql-agent-backend-rg9t.onrender.com (free tier, so the first request after idle can take ~30–60 s).
 
 Backend repo: https://github.com/arpitgoyal20/sql-agent-backend-
 
@@ -67,7 +67,7 @@ served in memory and reset on page reload. Useful prompts:
   Vercel domain to the backend's `ALLOWED_ORIGINS`. `vercel.json` rewrites all paths to
   `index.html`.
 - **Docker (optional):**
-  `docker build --build-arg VITE_API_URL=https://your-backend.onrender.com -t sql-agent-frontend .`
+  `docker build --build-arg VITE_API_URL=https://sql-agent-backend-rg9t.onrender.com -t sql-agent-frontend .`
   then `docker run -p 8080:80 sql-agent-frontend` (nginx serves `dist/`, see `nginx.conf`).
 
 ## Layout
