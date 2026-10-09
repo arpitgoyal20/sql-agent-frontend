@@ -1,4 +1,4 @@
-// Small display helpers: timestamps, relative times, date groups, ids, SQL detection.
+// Small display helpers: timestamps, relative times, ids, SQL detection, counts.
 
 import type { Dialect, Intent } from '../api/types';
 
@@ -54,32 +54,34 @@ export const INTENT_BADGES: Partial<Record<Intent, string>> = {
   explain: 'Explain',
 };
 
-/** Entries of the top-nav "Database" menu; each maps to the dialect sent with requests. */
-export type DatabaseId = 'demo' | 'postgres' | 'mysql' | 'sqlite';
-
-export const DATABASES: { id: DatabaseId; label: string; short: string; dialect: Dialect }[] = [
-  { id: 'demo', label: 'Demo Database', short: 'Demo DB', dialect: 'sqlite' },
-  { id: 'postgres', label: 'PostgreSQL', short: 'PostgreSQL', dialect: 'postgres' },
-  { id: 'mysql', label: 'MySQL', short: 'MySQL', dialect: 'mysql' },
-  { id: 'sqlite', label: 'SQLite', short: 'SQLite', dialect: 'sqlite' },
-];
-
-export type DateGroup = 'Today' | 'Yesterday' | 'Previous 7 days' | 'Older';
-
-export const DATE_GROUPS: DateGroup[] = ['Today', 'Yesterday', 'Previous 7 days', 'Older'];
-
-/** Sidebar group for a timestamp, by local calendar day. */
-export function dateGroup(iso: string, now = new Date()): DateGroup {
-  const then = new Date(iso);
-  if (Number.isNaN(then.getTime())) return 'Older';
-  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((startOfDay(now) - startOfDay(then)) / 86_400_000);
-  if (days <= 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  if (days <= 7) return 'Previous 7 days';
-  return 'Older';
-}
+/** Dialects offered in the header; sent with chat requests and editor runs. */
+export const DIALECTS: Dialect[] = ['sqlite', 'postgres', 'mysql'];
 
 export function formatCount(n: number): string {
   return n.toLocaleString('en-US');
+}
+
+/** "1 row" / "2,000 rows". */
+export function rowsLabel(n: number): string {
+  return `${formatCount(n)} ${n === 1 ? 'row' : 'rows'}`;
+}
+
+/** A validator error without its category and the long "Columns available" list. */
+export function errorText(raw: string): string {
+  const text = raw
+    .replace(/^[A-Z_]+:\s*/, '')
+    .replace(/\s*(Columns|Tables) available:[\s\S]*$/, '')
+    .trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : raw;
+}
+
+/** Page summary, e.g. `500 rows · 4 ms · page 1 of 5`. */
+export function pageSummary(total: number, ms: number | null, page: number, pages: number) {
+  return [
+    rowsLabel(total),
+    ms === null ? null : `${formatCount(ms)} ms`,
+    `page ${page} of ${pages}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }

@@ -11,9 +11,18 @@ interface Props {
   mime?: string;
   label: string;
   ariaLabel: string;
+  /** Extra classes for the visible label (e.g. hide it on phones). */
+  labelClassName?: string;
 }
 
-export default function DownloadButton({ filename, getContent, mime, label, ariaLabel }: Props) {
+export default function DownloadButton({
+  filename,
+  getContent,
+  mime,
+  label,
+  ariaLabel,
+  labelClassName,
+}: Props) {
   return (
     <button
       type="button"
@@ -23,7 +32,7 @@ export default function DownloadButton({ filename, getContent, mime, label, aria
       onClick={() => downloadText(filename, getContent(), mime)}
     >
       <Download className="h-3.5 w-3.5" aria-hidden="true" />
-      <span>{label}</span>
+      <span className={labelClassName}>{label}</span>
     </button>
   );
 }

@@ -1,13 +1,13 @@
 // Mock mode fixtures shared by the scripted chat (mock.ts) and the in-memory REST API
-// (mockRest.ts): result tables, the 7-table schema, and crude stand-ins for the backend's
+// (mockRest.ts): result tables, the 7-table schema with row counts, and crude stand-ins for the backend's
 // validator, query inspector and title generator. None of this runs against the real backend.
 
 import type {
   Dialect,
   QueryInspection,
   ResultEvent,
-  SchemaResponse,
-  SchemaTable,
+  TableColumn,
+  TableInfo,
   ValidationCheck,
 } from './types';
 
@@ -123,6 +123,8 @@ export const SQL = {
     "SELECT\n  STRFTIME('%Y-%m', o.OrderDate) AS month,\n  SUM(oi.Quantity * oi.UnitPrice) AS revenue\nFROM Orders AS o\nJOIN OrderItems AS oi\n  ON oi.OrderID = o.OrderID\nWHERE\n  o.OrderDate >= '2025-01-01'\n  AND o.OrderDate < '2026-01-01'\nGROUP BY\n  month\nORDER BY\n  month ASC",
   topCustomers:
     'SELECT\n  c.CustomerID,\n  c.Name,\n  SUM(oi.Quantity * oi.UnitPrice) AS TotalRevenue\nFROM Customers AS c\nJOIN Orders AS o\n  ON o.CustomerID = c.CustomerID\nJOIN OrderItems AS oi\n  ON oi.OrderID = o.OrderID\nGROUP BY\n  c.CustomerID,\n  c.Name\nORDER BY\n  TotalRevenue DESC\nLIMIT 10',
+  employeesWithDepartment:
+    "SELECT\n  e.EmployeeID,\n  e.FirstName,\n  e.LastName,\n  e.HireDate,\n  d.Name AS Department\nFROM Employees AS e\nJOIN Departments AS d\n  ON d.DepartmentID = e.DepartmentID\nWHERE\n  e.HireDate >= '2024-02-01'\nORDER BY\n  e.HireDate",
   customers: 'SELECT\n  CustomerID,\n  Name,\n  City,\n  State\nFROM Customers',
   caCustomers:
     "SELECT\n  CustomerID,\n  Name,\n  City,\n  State\nFROM Customers\nWHERE\n  State = 'California'",
@@ -132,39 +134,37 @@ export const SQL = {
     "SELECT\n  o.OrderID,\n  o.OrderDate,\n  o.Status,\n  c.Name AS CustomerName\nFROM Orders AS o\nJOIN Customers AS c\n  ON c.CustomerID = o.CustomerID\nWHERE\n  o.Status = 'pending'\nORDER BY\n  o.OrderDate DESC",
 } as const;
 
-// ---- Schema -------------------------------------------------------------------
+// ---- Schema (GET /api/tables) ------------------------------------------------------
 
 const col = (
   name: string,
   type: string,
   doc: string,
-  opts: { pk?: boolean; null?: boolean } = {},
-) => ({
+  opts: { pk?: boolean; null?: boolean; fk?: [string, string] } = {},
+): TableColumn => ({
   name,
   type,
   doc,
   pk: !!opts.pk,
+  fk: opts.fk ? { table: opts.fk[0], column: opts.fk[1] } : null,
   nullable: opts.pk ? false : (opts.null ?? false),
 });
 const pk = (name: string) => col(name, 'INTEGER', 'Primary key.', { pk: true });
-const fk = (column: string, ref_table: string, ref_column: string) => ({
-  column,
-  ref_table,
-  ref_column,
-});
 
-const TABLES: SchemaTable[] = [
+/** The demo database: 7 tables with the real row counts. */
+export const MOCK_TABLES: TableInfo[] = [
   {
     name: 'Departments',
+    row_count: 8,
     columns: [
       pk('DepartmentID'),
       col('Name', 'TEXT', 'Department name, e.g. Sales or Engineering.'),
       col('Location', 'TEXT', 'City where the department is based.', { null: true }),
     ],
-    foreign_keys: [],
   },
   {
     name: 'Employees',
+    row_count: 200,
     columns: [
       pk('EmployeeID'),
       col('FirstName', 'TEXT', 'Given name.'),
@@ -172,18 +172,18 @@ const TABLES: SchemaTable[] = [
       col('Email', 'TEXT', 'Work email address.'),
       col('HireDate', 'TEXT', 'Date hired, ISO format YYYY-MM-DD.'),
       col('Salary', 'REAL', 'Annual salary in USD.', { null: true }),
-      col('DepartmentID', 'INTEGER', 'Department the employee belongs to.'),
+      col('DepartmentID', 'INTEGER', 'Department the employee belongs to.', {
+        fk: ['Departments', 'DepartmentID'],
+      }),
       col('ManagerID', 'INTEGER', "The employee's manager; NULL for top-level managers.", {
         null: true,
+        fk: ['Employees', 'EmployeeID'],
       }),
-    ],
-    foreign_keys: [
-      fk('DepartmentID', 'Departments', 'DepartmentID'),
-      fk('ManagerID', 'Employees', 'EmployeeID'),
     ],
   },
   {
     name: 'Customers',
+    row_count: 500,
     columns: [
       pk('CustomerID'),
       col('Name', 'TEXT', 'Customer full name.'),
@@ -192,57 +192,56 @@ const TABLES: SchemaTable[] = [
       col('State', 'TEXT', 'Full US state name, e.g. California.', { null: true }),
       col('SignupDate', 'TEXT', 'Date the customer signed up, YYYY-MM-DD.'),
     ],
-    foreign_keys: [],
   },
   {
     name: 'Products',
+    row_count: 50,
     columns: [
       pk('ProductID'),
       col('Name', 'TEXT', 'Product name.'),
       col('Category', 'TEXT', 'Product category.', { null: true }),
       col('Price', 'REAL', 'Current list price in USD.'),
     ],
-    foreign_keys: [],
   },
   {
     name: 'Orders',
+    row_count: 2000,
     columns: [
       pk('OrderID'),
-      col('CustomerID', 'INTEGER', 'Customer who placed the order.'),
-      col('EmployeeID', 'INTEGER', 'Employee who handled the order.', { null: true }),
+      col('CustomerID', 'INTEGER', 'Customer who placed the order.', {
+        fk: ['Customers', 'CustomerID'],
+      }),
+      col('EmployeeID', 'INTEGER', 'Employee who handled the order.', {
+        null: true,
+        fk: ['Employees', 'EmployeeID'],
+      }),
       col('OrderDate', 'TEXT', 'Date the order was placed, YYYY-MM-DD.'),
       col('Status', 'TEXT', 'pending, shipped, delivered or cancelled.'),
-    ],
-    foreign_keys: [
-      fk('CustomerID', 'Customers', 'CustomerID'),
-      fk('EmployeeID', 'Employees', 'EmployeeID'),
     ],
   },
   {
     name: 'OrderItems',
+    row_count: 6035,
     columns: [
       pk('OrderItemID'),
-      col('OrderID', 'INTEGER', 'Order this line belongs to.'),
-      col('ProductID', 'INTEGER', 'Product ordered.'),
+      col('OrderID', 'INTEGER', 'Order this line belongs to.', { fk: ['Orders', 'OrderID'] }),
+      col('ProductID', 'INTEGER', 'Product ordered.', { fk: ['Products', 'ProductID'] }),
       col('Quantity', 'INTEGER', 'Units ordered.'),
       col('UnitPrice', 'REAL', 'Price per unit at the time of the order.'),
     ],
-    foreign_keys: [fk('OrderID', 'Orders', 'OrderID'), fk('ProductID', 'Products', 'ProductID')],
   },
   {
     name: 'Payments',
+    row_count: 1791,
     columns: [
       pk('PaymentID'),
-      col('OrderID', 'INTEGER', 'Order being paid for.'),
+      col('OrderID', 'INTEGER', 'Order being paid for.', { fk: ['Orders', 'OrderID'] }),
       col('Amount', 'REAL', 'Amount paid in USD.'),
       col('Method', 'TEXT', 'Payment method, e.g. card or paypal.'),
       col('PaidAt', 'TEXT', 'Payment timestamp, ISO format.', { null: true }),
     ],
-    foreign_keys: [fk('OrderID', 'Orders', 'OrderID')],
   },
 ];
-
-export const MOCK_SCHEMA: SchemaResponse = { tables: TABLES };
 
 // ---- Crude validator / inspector / title generator --------------------------------
 
@@ -259,7 +258,7 @@ export function referencedTables(sql: string): string[] {
 }
 
 export function knownTable(name: string): string | null {
-  return TABLES.find((t) => t.name.toLowerCase() === name.toLowerCase())?.name ?? null;
+  return MOCK_TABLES.find((t) => t.name.toLowerCase() === name.toLowerCase())?.name ?? null;
 }
 
 /** Split on commas that are not inside parentheses. */

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyStep, humanizeCheckError, messagesFromThread } from './chatModel';
+import {
+  applyStep,
+  explainMessage,
+  fixMessage,
+  humanizeCheckError,
+  messagesFromThread,
+  optimizeMessage,
+} from './chatModel';
 
 describe('applyStep', () => {
   it('keeps first-seen order and the latest status, accumulating retry errors', () => {
@@ -61,5 +68,29 @@ describe('messagesFromThread', () => {
     expect(refusal).toMatchObject({ refusal: { reason: 'destructive' } });
     expect(answer).toMatchObject({ request: 'Show customers', fromHistory: true });
     expect(answer.role === 'assistant' && answer.sql?.validation).toBeUndefined();
+  });
+});
+
+describe('editor action messages (CHANGES-v2.md §4)', () => {
+  const sql = 'SELECT *\nFROM Customers\nLIMIT 100;';
+
+  it('wraps the editor SQL in a sql code fence', () => {
+    expect(explainMessage(sql)).toBe(
+      'Explain this query:\n```sql\nSELECT *\nFROM Customers\nLIMIT 100;\n```',
+    );
+    expect(optimizeMessage(`  ${sql}\n`)).toBe(
+      'Optimize this query:\n```sql\nSELECT *\nFROM Customers\nLIMIT 100;\n```',
+    );
+  });
+
+  it('appends the validator errors to a fix request', () => {
+    expect(
+      fixMessage('SELECT nope FROM Customers', [
+        "UNKNOWN_COLUMN: column 'nope' does not exist.",
+        'SYNTAX: x',
+      ]),
+    ).toBe(
+      "Fix this query:\n```sql\nSELECT nope FROM Customers\n```\nError: UNKNOWN_COLUMN: column 'nope' does not exist.; SYNTAX: x",
+    );
   });
 });

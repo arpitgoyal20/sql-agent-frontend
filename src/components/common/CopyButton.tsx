@@ -11,6 +11,8 @@ interface Props {
   label?: string;
   ariaLabel: string;
   className?: string;
+  /** Extra classes for the visible label (e.g. hide it on phones). */
+  labelClassName?: string;
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -30,7 +32,7 @@ async function writeClipboard(text: string): Promise<void> {
   area.remove();
 }
 
-export default function CopyButton({ text, label, ariaLabel, className }: Props) {
+export default function CopyButton({ text, label, ariaLabel, className, labelClassName }: Props) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -57,7 +59,7 @@ export default function CopyButton({ text, label, ariaLabel, className }: Props)
       className={className ?? (label ? 'btn-ghost' : 'btn-icon')}
     >
       <Icon className={`h-3.5 w-3.5 ${copied ? 'text-success' : ''}`} aria-hidden="true" />
-      {label && <span>{copied ? 'Copied' : label}</span>}
+      {label && <span className={labelClassName}>{copied ? 'Copied' : label}</span>}
     </button>
   );
 }

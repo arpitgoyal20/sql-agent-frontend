@@ -1,21 +1,24 @@
 // Mock mode (VITE_MOCK=true): replays a scripted SSE sequence per intent so the UI can be
 // built and demoed without the backend. Event names and payloads match the real contract
-// (REQUIREMENTS.md §4 plus docs/API_ADDITIONS.md).
+// (REQUIREMENTS.md §4, docs/API_ADDITIONS.md and docs/BACKEND-CHANGES-v2.md): `result` events
+// carry total / limit / offset, and follow-ups build on `current_sql` like the real agent.
 
+import { SQL, inspectSql, knownTable, passingValidation, referencedTables } from './mockData';
 import {
-  ABOVE_AVERAGE,
-  CA_CUSTOMERS,
-  CUSTOMERS,
-  EMPLOYEES_2024,
-  MONTHLY_REVENUE,
-  PENDING_ORDERS,
-  SQL,
-  TOP_CUSTOMERS,
-  inspectSql,
-  passingValidation,
-} from './mockData';
+  DESTRUCTIVE_TEXT,
+  fixSql,
+  resultEventFor,
+  tableInfo,
+  toSqliteMock,
+  unknownColumns,
+  unsupportedMessage,
+  unsupportedOnSqlite,
+  validateSql,
+} from './mockDb';
 import { recordMockTurn } from './mockRest';
 import type { ChatEvent, ChatRequest, Intent, ResultEvent, SqlEvent, StepEvent } from './types';
+import { humanizeCheckError } from '../context/chatModel';
+import { formatSql } from '../utils/sqlFormat';
 
 type Emit = (event: ChatEvent) => void;
 
@@ -51,6 +54,7 @@ const sqlEvent = (sql: string, req: ChatRequest, extra: Partial<SqlEvent> = {}):
     inspection: inspectSql(sql),
     modified_previous: false,
     original_sql: null,
+    executed_sql: toSqliteMock(sql, req.dialect),
     ...extra,
   },
 });
@@ -114,13 +118,98 @@ function shortCircuit(intent: Intent, node: 'refuse' | 'clarify', final: ChatEve
 
 const OUT_OF_SCOPE_TEXT =
   "I'm designed to assist only with SQL and database-related tasks. Please ask a question related to the provided database schema.";
-const DESTRUCTIVE_TEXT =
-  "I can only generate read-only (SELECT) queries, so I can't help with inserting, updating, deleting or altering data. I can help you write a SELECT to preview the rows that would be affected.";
-
-/** The SQL the user pasted, from the first SELECT/WITH onwards. */
+/** The SQL in a message: a ```sql fenced block, or from the first SELECT/WITH onwards. */
 function userSql(message: string): string {
+  const fenced = /```(?:sql)?\s*\n([\s\S]*?)```/i.exec(message);
+  if (fenced) return fenced[1].trim();
   const i = message.search(/\b(select|with)\b/i);
   return (i >= 0 ? message.slice(i) : message).trim();
+}
+
+const pretty = (sql: string) => {
+  try {
+    return formatSql(sql, 'sqlite');
+  } catch {
+    return sql;
+  }
+};
+
+/** Drop a trailing `;` and the browser's LIMIT/OFFSET, like the backend does for current_sql. */
+function withoutPaging(sql: string): string {
+  return sql
+    .trim()
+    .replace(/;\s*$/, '')
+    .replace(/\s+limit\s+\d+(\s+offset\s+\d+)?\s*$/i, '')
+    .trim();
+}
+
+/** Add `cond` to a query's WHERE (or create one), before ORDER BY / LIMIT. */
+function addFilter(sql: string, cond: string): string {
+  const base = withoutPaging(sql);
+  const tail = /\s+(order\s+by|group\s+by)\b[\s\S]*$/i.exec(base);
+  const head = tail ? base.slice(0, tail.index) : base;
+  const rest = tail ? tail[0] : '';
+  const joined = /\bwhere\b/i.test(head) ? `${head} AND ${cond}` : `${head} WHERE ${cond}`;
+  return pretty(`${joined}${rest}`);
+}
+
+const STATES = ['California', 'Texas', 'New York', 'Florida', 'Washington', 'Illinois', 'Colorado'];
+const ORDER_STATUSES = ['pending', 'shipped', 'delivered', 'cancelled'];
+
+/** The follow-up query for "only those from California" etc., built on the editor's SQL. */
+function modifiedSql(message: string, current: string | undefined): string {
+  const lower = message.toLowerCase();
+  const base = current?.trim() ? current : SQL.customers;
+  const table = referencedTables(base).map(knownTable)[0];
+  const state = STATES.find((st) => lower.includes(st.toLowerCase()));
+  const status = ORDER_STATUSES.find((st) => lower.includes(st));
+  if (table === 'Customers') return addFilter(base, `State = '${state ?? 'California'}'`);
+  if (table === 'Orders' && status) return addFilter(base, `Status = '${status}'`);
+  return SQL.caCustomers;
+}
+
+/** A plain-English description of a query for the mock "explain" turn. */
+function describe(sql: string): string {
+  const tables = referencedTables(sql).map((t) => knownTable(t) ?? t);
+  const parts = [
+    `This query reads rows from ${tables.length ? tables.join(' and ') : 'the database'}`,
+  ];
+  if (/\bjoin\b/i.test(sql)) parts.push('matches related rows across the tables');
+  if (/\bwhere\b/i.test(sql)) parts.push('keeps only the rows that match its WHERE filter');
+  if (/\bgroup\s+by\b/i.test(sql)) parts.push('groups them and calculates totals per group');
+  if (/select\s+\*/i.test(sql)) parts.push('returns every column');
+  else parts.push('returns the selected columns');
+  const limit = /\blimit\s+(\d+)/i.exec(sql);
+  if (limit) parts.push(`stops after ${limit[1]} rows`);
+  return `${parts.join(', ')}.`;
+}
+
+/** Generic optimize: replace SELECT * on one table with its columns; suggest an index. */
+function optimizeGeneric(sql: string): Partial<SqlEvent> & { sql: string } {
+  const table = tableInfo(referencedTables(sql)[0] ?? '');
+  const notes: string[] = [];
+  let out = withoutPaging(sql);
+  const limit = /\blimit\s+\d+(\s+offset\s+\d+)?\s*;?\s*$/i.exec(sql.trim())?.[0] ?? '';
+  if (table && /select\s+\*/i.test(out)) {
+    out = out.replace(/select\s+\*/i, `SELECT ${table.columns.map((c) => c.name).join(', ')}`);
+    notes.push(
+      `Replaced SELECT * with the ${table.columns.length} columns of ${table.name}, so the result no longer changes if columns are added.`,
+    );
+  }
+  if (limit) notes.push('Kept the LIMIT so only one page of rows is read.');
+  if (!notes.length) notes.push('The query already reads only what it needs; no rewrite needed.');
+  const filter = /\bwhere\s+(?:\w+\.)?(\w+)\s*(=|>|<|>=|<=|like)/i.exec(out);
+  const index =
+    table && filter
+      ? [
+          `CREATE INDEX idx_${table.name.toLowerCase()}_${filter[1].toLowerCase()} ON ${table.name}(${filter[1]});`,
+        ]
+      : [];
+  return {
+    sql: pretty(`${out}${limit ? ` ${limit.replace(/;\s*$/, '')}` : ''}`),
+    optimization_notes: notes,
+    index_suggestions: index,
+  };
 }
 
 /** Pick a scripted reply from keywords in the message. Exported for tests. */
@@ -128,7 +217,24 @@ export function pickScript(req: ChatRequest): Script {
   const m = req.message.trim();
   const lower = m.toLowerCase();
   const hasSql = /\bselect\b[\s\S]+\bfrom\b/i.test(m);
-  const run = (r: ResultEvent) => (req.execute ? r : null);
+  const run = (sql: string): ResultEvent | null => {
+    if (!req.execute) return null;
+    if (unsupportedOnSqlite(sql, req.dialect)) {
+      return {
+        columns: [],
+        rows: [],
+        row_count: 0,
+        truncated: false,
+        total: 0,
+        limit: 0,
+        offset: 0,
+        error: unsupportedMessage(req.dialect),
+      };
+    }
+    return resultEventFor(toSqliteMock(sql, req.dialect) ?? sql);
+  };
+  // Editor actions arrive as "Explain / Optimize / Fix this query:\n```sql …```".
+  const action = /^(explain|optimi[sz]e|fix) this query:/i.exec(m)?.[1].toLowerCase() ?? null;
 
   if (lower.includes('mock error')) {
     return {
@@ -173,7 +279,29 @@ export function pickScript(req: ChatRequest): Script {
       }),
     };
   }
-  if (hasSql && /^\s*(fix|debug)|why is this|failing|error|broken|wrong/.test(lower)) {
+  const isDebug =
+    action === 'fix' ||
+    (!action && hasSql && /^\s*(fix|debug)|why is this|failing|error|broken|wrong/.test(lower));
+  if (isDebug && unknownColumns(userSql(m)).length) {
+    const original = userSql(m);
+    const fixed = pretty(fixSql(original));
+    const reported = /\nError:\s*([\s\S]+)$/.exec(m)?.[1].split(/;\s+(?=[A-Z_]+:)/) ?? [];
+    return {
+      intent: 'debug',
+      events: pipeline(
+        'debug',
+        'rewrite_user_sql',
+        sqlEvent(fixed, req, {
+          original_sql: original,
+          issues: (reported.length ? reported : validateSql(original)).map(humanizeCheckError),
+        }),
+        run(fixed),
+        `The original query referenced a column that does not exist. ${describe(fixed)}`,
+        ['The closest existing column name was used in place of the unknown one.'],
+      ),
+    };
+  }
+  if (isDebug) {
     return {
       intent: 'debug',
       events: pipeline(
@@ -187,13 +315,30 @@ export function pickScript(req: ChatRequest): Script {
             'Aggregate AVG() cannot be used directly in WHERE; compare against a subquery instead.',
           ],
         }),
-        run(ABOVE_AVERAGE),
+        run(SQL.debugFixed),
         'This lists employees whose salary is above the company-wide average salary. The original query referenced a table and column that do not exist and used an average directly in the filter, so the average is now calculated in a subquery first.',
         ['"name" was interpreted as first and last name.'],
       ),
     };
   }
-  if (hasSql && /optimi[sz]e|faster|slow|improve/.test(lower)) {
+  const isOptimize =
+    action === 'optimize' || (!action && hasSql && /optimi[sz]e|faster|slow|improve/.test(lower));
+  if (isOptimize && !/\bjoin\s+customers\b/i.test(userSql(m))) {
+    const original = userSql(m);
+    const opt = optimizeGeneric(original);
+    return {
+      intent: 'optimize',
+      events: pipeline(
+        'optimize',
+        'rewrite_user_sql',
+        sqlEvent(opt.sql, req, { ...opt, original_sql: original }),
+        run(opt.sql),
+        describe(opt.sql),
+        [],
+      ),
+    };
+  }
+  if (isOptimize) {
     return {
       intent: 'optimize',
       events: pipeline(
@@ -208,7 +353,7 @@ export function pickScript(req: ChatRequest): Script {
           index_suggestions: ['CREATE INDEX idx_orders_status_date ON Orders(Status, OrderDate);'],
           removed_joins: [],
         }),
-        run(PENDING_ORDERS),
+        run(SQL.optimized),
         'This returns pending orders with the customer who placed each one, newest first. It reads only the columns it needs instead of every column from both tables.',
         [],
       ),
@@ -223,21 +368,23 @@ export function pickScript(req: ChatRequest): Script {
         'rewrite_user_sql',
         sqlEvent(sql, req, { original_sql: sql }),
         null,
-        'This query reads rows from the tables it names, keeps the rows that match its WHERE filters and returns the selected columns in the requested order.',
+        describe(sql),
         [],
       ),
     };
   }
   if (/^(only|just|sort|order|now|also|and|those|top \d+ of)/.test(lower)) {
+    const sql = modifiedSql(m, req.current_sql);
+    const state = STATES.find((st) => lower.includes(st.toLowerCase())) ?? 'California';
     return {
       intent: 'modify',
       events: pipeline(
         'modify',
         'generate_sql',
-        sqlEvent(SQL.caCustomers, req, { modified_previous: true }),
-        run(CA_CUSTOMERS),
-        'This narrows the previous customer list to customers located in California, keeping the same columns.',
-        ['"California" matches the full state name stored in Customers.State.'],
+        sqlEvent(sql, req, { modified_previous: true }),
+        run(sql),
+        `This narrows the previous query to the matching rows, keeping the same columns. ${describe(sql)}`,
+        [`"${state}" matches the full state name stored in Customers.State.`],
       ),
     };
   }
@@ -248,7 +395,7 @@ export function pickScript(req: ChatRequest): Script {
         'generate',
         'generate_sql',
         sqlEvent(SQL.monthlyRevenue, req),
-        run(MONTHLY_REVENUE),
+        run(SQL.monthlyRevenue),
         'This adds up the value of every order line (quantity × unit price) for orders placed in 2025 and groups the totals by calendar month, from January to December.',
         ['Revenue includes orders of every status, including cancelled ones.'],
         {
@@ -260,14 +407,16 @@ export function pickScript(req: ChatRequest): Script {
     };
   }
   if (/top \d+ customers|by revenue|total order value/.test(lower)) {
+    const n = /top (\d+)/.exec(lower)?.[1] ?? '10';
+    const sql = SQL.topCustomers.replace('LIMIT 10', `LIMIT ${n}`);
     return {
       intent: 'generate',
       events: pipeline(
         'generate',
         'generate_sql',
-        sqlEvent(SQL.topCustomers, req),
-        run(TOP_CUSTOMERS),
-        'This finds the ten customers who have spent the most across all their orders. Each order line is valued as quantity times unit price, added up per customer, and sorted from highest to lowest.',
+        sqlEvent(sql, req),
+        run(sql),
+        `This finds the ${n === '10' ? 'ten' : n} customers who have spent the most across all their orders. Each order line is valued as quantity times unit price, added up per customer, and sorted from highest to lowest.`,
         ['Revenue includes orders of every status, including cancelled ones.'],
         {
           retryErrors: ["UNKNOWN_TABLE: table 'Customer' does not exist. Did you mean: Customers?"],
@@ -282,7 +431,7 @@ export function pickScript(req: ChatRequest): Script {
         'generate',
         'generate_sql',
         sqlEvent(SQL.caCustomers, req),
-        run(CA_CUSTOMERS),
+        run(SQL.caCustomers),
         'This lists customers located in California with their ID, name, city and state.',
         ['"California" matches the full state name stored in Customers.State.'],
       ),
@@ -295,9 +444,22 @@ export function pickScript(req: ChatRequest): Script {
         'generate',
         'generate_sql',
         sqlEvent(SQL.customers, req),
-        run(CUSTOMERS),
+        run(SQL.customers),
         'This lists every customer with their ID, name, city and state.',
         [],
+      ),
+    };
+  }
+  if (/employees/.test(lower) && /department/.test(lower)) {
+    return {
+      intent: 'generate',
+      events: pipeline(
+        'generate',
+        'generate_sql',
+        sqlEvent(SQL.employeesWithDepartment, req),
+        run(SQL.employeesWithDepartment),
+        'This lists employees hired after January 2024 together with the name of their department, joining each employee to the Departments table through DepartmentID. The newest hires come last.',
+        ['"After January 2024" was read as hired on or after 2024-02-01.'],
       ),
     };
   }
@@ -307,7 +469,7 @@ export function pickScript(req: ChatRequest): Script {
       'generate',
       'generate_sql',
       sqlEvent(SQL.employees2024, req),
-      run(EMPLOYEES_2024),
+      run(SQL.employees2024),
       'This lists employees who joined the company on or after 1 January 2024, showing their name, hire date and salary. Results are ordered from the earliest to the most recent hire.',
       ['"After January 2024" was read as on or after 2024-01-01.'],
     ),

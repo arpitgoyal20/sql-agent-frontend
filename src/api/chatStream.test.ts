@@ -2,6 +2,9 @@ import { fetchEventSource, type FetchEventSourceInit } from '@microsoft/fetch-ev
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ERROR_TEXT, httpErrorText, streamChat, type ChatStreamHandlers } from './chatStream';
+import { CLIENT_ID_HEADER, CLIENT_ID_STORAGE_KEY, resetClientIdCache } from './clientId';
+// Preload the lazily imported mock so fake timers see its first delay.
+import './mock';
 import type { ChatEvent, ChatRequest } from './types';
 
 vi.mock('@microsoft/fetch-event-source', () => ({ fetchEventSource: vi.fn() }));
@@ -106,6 +109,34 @@ describe('streamChat', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual(REQUEST);
     expect(init.openWhenHidden).toBe(true);
+  });
+
+  it('sends the editor SQL as current_sql in the request body', async () => {
+    serve(HAPPY_PATH);
+    const request: ChatRequest = {
+      ...REQUEST,
+      message: 'only those from California',
+      current_sql: 'SELECT *\nFROM Customers\nLIMIT 100;',
+    };
+    await streamChat(request, {}, { mock: false });
+    const body = JSON.parse(mockedFES.mock.calls[0][1].body as string);
+    expect(body.current_sql).toBe('SELECT *\nFROM Customers\nLIMIT 100;');
+    expect(body).toEqual(request);
+  });
+
+  it('sends a stable X-Client-Id (UUID v4, stored in localStorage) with the stream request', async () => {
+    localStorage.clear();
+    resetClientIdCache();
+    serve(HAPPY_PATH);
+    await streamChat(REQUEST, {}, { mock: false });
+    serve(HAPPY_PATH);
+    await streamChat(REQUEST, {}, { mock: false });
+    const headers = mockedFES.mock.calls.map(([, init]) => init.headers as Record<string, string>);
+    const id = headers[0][CLIENT_ID_HEADER];
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(headers[1][CLIENT_ID_HEADER]).toBe(id);
+    expect(localStorage.getItem(CLIENT_ID_STORAGE_KEY)).toBe(id);
+    expect(headers[0]['Content-Type']).toBe('application/json');
   });
 
   it('fires callbacks in event order and resolves "done" after the done event', async () => {

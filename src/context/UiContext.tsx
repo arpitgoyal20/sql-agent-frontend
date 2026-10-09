@@ -1,86 +1,100 @@
-// Layout state: thread drawer (< 768 px), schema panel (≥ 1280 px) or drawer (below), and the
-// ⌘K search palette.
+// Layout state: desktop vs mobile, the mobile bottom tab, whether the chat column is open
+// (persisted), and the thread switcher menu (⌘K opens it).
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
-/** Matches Tailwind's `xl` breakpoint, where the schema is a column instead of a drawer. */
-export const SCHEMA_COLUMN_QUERY = '(min-width: 1280px)';
+/** Desktop three-column layout from Tailwind's `lg` breakpoint (CHANGES-v2.md §1). */
+export const DESKTOP_QUERY = '(min-width: 1024px)';
+export const CHAT_OPEN_STORAGE_KEY = 'sqlagent.chatOpen';
+
+export type MobileTab = 'tables' | 'editor' | 'results' | 'chat';
 
 interface UiValue {
-  threadsDrawer: boolean;
-  setThreadsDrawer: (open: boolean) => void;
-  /** Desktop schema column visibility. */
-  schemaPanel: boolean;
-  /** Schema drawer on tablet / mobile. */
-  schemaDrawer: boolean;
-  setSchemaDrawer: (open: boolean) => void;
-  /** Composer "Schema" button: toggles the column on desktop, the drawer elsewhere. */
-  toggleSchema: () => void;
-  schemaVisible: boolean;
-  paletteOpen: boolean;
-  setPaletteOpen: (open: boolean) => void;
-  closeDrawers: () => void;
+  desktop: boolean;
+  mobileTab: MobileTab;
+  setMobileTab: (tab: MobileTab) => void;
+  /** Desktop: chat column visible (otherwise a floating "Ask AI" button). */
+  chatOpen: boolean;
+  setChatOpen: (open: boolean) => void;
+  /** Bring the chat into view: expand the column on desktop, switch tab on mobile. */
+  showChat: () => void;
+  /** Mobile only: switch to a tab (no-op on desktop where everything is visible). */
+  showOnMobile: (tab: MobileTab) => void;
+  threadMenuOpen: boolean;
+  setThreadMenuOpen: (open: boolean) => void;
 }
 
 const UiContext = createContext<UiValue | null>(null);
 
-function isDesktop(): boolean {
-  return window.matchMedia?.(SCHEMA_COLUMN_QUERY).matches ?? true;
+function matches(query: string): boolean {
+  return window.matchMedia?.(query).matches ?? true;
+}
+
+function readChatOpen(): boolean {
+  try {
+    return localStorage.getItem(CHAT_OPEN_STORAGE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
 }
 
 export function UiProvider({ children }: { children: ReactNode }) {
-  const [threadsDrawer, setThreadsDrawer] = useState(false);
-  const [schemaPanel, setSchemaPanel] = useState(true);
-  const [schemaDrawer, setSchemaDrawer] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [desktop, setDesktop] = useState(isDesktop);
+  const [desktop, setDesktop] = useState(() => matches(DESKTOP_QUERY));
+  const [mobileTab, setMobileTab] = useState<MobileTab>('tables');
+  const [chatOpen, setChatOpenState] = useState(readChatOpen);
+  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
 
   useEffect(() => {
-    const media = window.matchMedia?.(SCHEMA_COLUMN_QUERY);
+    const media = window.matchMedia?.(DESKTOP_QUERY);
     if (!media) return;
-    const onChange = (e: MediaQueryListEvent) => {
-      setDesktop(e.matches);
-      if (e.matches) setSchemaDrawer(false);
-    };
+    const onChange = (e: MediaQueryListEvent) => setDesktop(e.matches);
     media.addEventListener('change', onChange);
     return () => media.removeEventListener('change', onChange);
   }, []);
 
-  // ⌘K / Ctrl+K opens the search palette from anywhere.
+  const setChatOpen = useCallback((open: boolean) => {
+    setChatOpenState(open);
+    try {
+      localStorage.setItem(CHAT_OPEN_STORAGE_KEY, String(open));
+    } catch {
+      // Storage unavailable; the choice just won't persist.
+    }
+  }, []);
+
+  const showChat = useCallback(() => {
+    if (matches(DESKTOP_QUERY)) setChatOpen(true);
+    else setMobileTab('chat');
+  }, [setChatOpen]);
+
+  const showOnMobile = useCallback((tab: MobileTab) => {
+    if (!matches(DESKTOP_QUERY)) setMobileTab(tab);
+  }, []);
+
+  // ⌘K / Ctrl+K opens the thread switcher (with its search box) from anywhere.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setPaletteOpen(true);
+        showChat();
+        setThreadMenuOpen(true);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  const toggleSchema = useCallback(() => {
-    if (isDesktop()) setSchemaPanel((v) => !v);
-    else setSchemaDrawer((v) => !v);
-  }, []);
-
-  const closeDrawers = useCallback(() => {
-    setThreadsDrawer(false);
-    setSchemaDrawer(false);
-  }, []);
+  }, [showChat]);
 
   return (
     <UiContext.Provider
       value={{
-        threadsDrawer,
-        setThreadsDrawer,
-        schemaPanel,
-        schemaDrawer,
-        setSchemaDrawer,
-        toggleSchema,
-        schemaVisible: desktop ? schemaPanel : schemaDrawer,
-        paletteOpen,
-        setPaletteOpen,
-        closeDrawers,
+        desktop,
+        mobileTab,
+        setMobileTab,
+        chatOpen,
+        setChatOpen,
+        showChat,
+        showOnMobile,
+        threadMenuOpen,
+        setThreadMenuOpen,
       }}
     >
       {children}

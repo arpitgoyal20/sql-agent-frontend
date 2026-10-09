@@ -32,12 +32,6 @@ export interface ActivityStep {
   retried: boolean;
 }
 
-/** State of a "Run Query" (POST /api/execute) for one turn. */
-export interface RunState {
-  status: 'idle' | 'running' | 'error';
-  error: string | null;
-}
-
 export interface AssistantMessage {
   id: string;
   role: 'assistant';
@@ -51,9 +45,8 @@ export interface AssistantMessage {
   steps: ActivityStep[];
   intent: Intent | null;
   sql: SqlEvent | null;
-  /** From the stream's `result` event or a later Run Query. */
+  /** From the stream's `result` event (shown in the Results grid; the bubble only summarises). */
   result: ResultEvent | null;
-  run: RunState;
   tokens: string;
   explanation: ExplanationEvent | null;
   clarify: string | null;
@@ -94,8 +87,6 @@ export function humanizeCheckError(raw: string): string {
   return first ? first[0].toUpperCase() + first.slice(1) : raw;
 }
 
-export const IDLE_RUN: RunState = { status: 'idle', error: null };
-
 export function emptyTurn(request: string, executed: boolean): AssistantMessage {
   return {
     id: newId(),
@@ -108,7 +99,6 @@ export function emptyTurn(request: string, executed: boolean): AssistantMessage 
     intent: null,
     sql: null,
     result: null,
-    run: IDLE_RUN,
     tokens: '',
     explanation: null,
     clarify: null,
@@ -169,11 +159,29 @@ export function messagesFromThread(detail: ThreadDetail, dialect: Dialect): Chat
   return out;
 }
 
-/** Assistant turns that produced SQL, in order (Query History). */
-export function sqlTurns(messages: ChatMessage[]): AssistantMessage[] {
-  return messages.filter((m): m is AssistantMessage => m.role === 'assistant' && !!m.sql);
-}
+// Editor actions routed through the chat (CHANGES-v2.md §4). The backend classifies these
+// phrasings as explain / optimize / debug.
+const fence = (sql: string) => `\`\`\`sql\n${sql.trim()}\n\`\`\``;
 
-/** Message prefixes for the SQL card's Optimize / Explain actions. */
-export const optimizeMessage = (sql: string) => `Optimize this query:\n${sql}`;
-export const explainMessage = (sql: string) => `Explain this query:\n${sql}`;
+export const explainMessage = (sql: string) => `Explain this query:\n${fence(sql)}`;
+export const optimizeMessage = (sql: string) => `Optimize this query:\n${fence(sql)}`;
+export const fixMessage = (sql: string, errors: string[]) =>
+  `Fix this query:\n${fence(sql)}\nError: ${errors.join('; ')}`;
+
+/** Navigator "Ask AI about this table" prefill (CHANGES-v2.md §3). */
+export const askAboutTable = (table: string) =>
+  `Describe the ${table} table and what I can ask about it`;
+
+/** Whether the Notes tab has anything worth a dot: warnings, issues, optimisation output. */
+export function hasNotes(sql: SqlEvent | null, runWarnings: string[] = []): boolean {
+  if (runWarnings.length) return true;
+  if (!sql) return false;
+  return (
+    sql.warnings.length +
+      sql.issues.length +
+      sql.optimization_notes.length +
+      sql.index_suggestions.length +
+      sql.removed_joins.length >
+    0
+  );
+}

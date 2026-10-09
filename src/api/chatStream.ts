@@ -10,7 +10,7 @@
 import { fetchEventSource, type EventSourceMessage } from '@microsoft/fetch-event-source';
 
 import { HttpError, apiUrl, isMockMode } from './client';
-import { runMockChat } from './mock';
+import { CLIENT_ID_HEADER, getClientId } from './clientId';
 import {
   CHAT_EVENT_NAMES,
   type ChatEvent,
@@ -146,13 +146,20 @@ export function streamChat(
     const slowTimer = setTimeout(() => handlers.onSlow?.(), slowAfterMs);
 
     if (mock) {
-      runMockChat(request, dispatch, ctrl.signal).then(onClosed, () => fail(ERROR_TEXT.network));
+      // Loaded on demand so the scripted replies stay out of the production bundle.
+      import('./mock')
+        .then(({ runMockChat }) => runMockChat(request, dispatch, ctrl.signal))
+        .then(onClosed, () => fail(ERROR_TEXT.network));
       return;
     }
 
     fetchEventSource(apiUrl('/api/chat'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        [CLIENT_ID_HEADER]: getClientId(),
+      },
       body: JSON.stringify(request),
       signal: ctrl.signal,
       // Without this the library closes and re-POSTs when the tab is hidden.

@@ -1,37 +1,19 @@
-// Mock mode REST data: threads (fed by mock chat turns), saved queries,
-// /api/execute and the 7-table schema — all in memory, reset on page reload.
+// Mock mode REST data: threads (fed by mock chat turns), /api/tables, table previews and
+// /api/query/run — all in memory, reset on page reload. The X-Client-Id header is not checked.
 
-import {
-  DESTRUCTIVE_RE,
-  MOCK_SCHEMA,
-  SQL,
-  CA_CUSTOMERS,
-  CUSTOMERS,
-  EMPLOYEES_2024,
-  MONTHLY_REVENUE,
-  PENDING_ORDERS,
-  ABOVE_AVERAGE,
-  TOP_CUSTOMERS,
-  inspectSql,
-  knownTable,
-  mockTitle,
-  passingValidation,
-  referencedTables,
-} from './mockData';
+import { MOCK_TABLES, SQL, mockTitle } from './mockData';
+import { previewMock, runMock, tableInfo } from './mockDb';
 import type {
   ChatRequest,
-  ExecuteRequest,
-  ExecuteResponse,
   Intent,
-  ResultEvent,
-  SavedQuery,
-  SavedQueryInput,
+  PreviewResponse,
+  RunRequest,
+  RunResponse,
+  TablesResponse,
   ThreadDetail,
   ThreadMessage,
   ThreadSummary,
 } from './types';
-
-export { MOCK_SCHEMA };
 
 /** Thrown by mock endpoints with the status and `detail` the real backend would send. */
 export class MockHttpError extends Error {
@@ -54,7 +36,6 @@ interface MockThread {
 
 interface Store {
   threads: Map<string, MockThread>;
-  saved: SavedQuery[];
 }
 
 const ago = (hours: number) => new Date(Date.now() - hours * 3600_000).toISOString();
@@ -78,7 +59,7 @@ function thread(
   };
 }
 
-/** A few sample threads (one per sidebar group) and a saved query. */
+/** A few sample threads. */
 function seed(): Store {
   return {
     threads: new Map([
@@ -114,28 +95,14 @@ function seed(): Store {
         ),
       ],
     ]),
-    saved: [
-      {
-        id: 'mock-saved-top-customers',
-        title: 'Top 10 Customers by Revenue',
-        prompt: 'Show the top 10 customers by revenue',
-        sql: SQL.topCustomers,
-        dialect: 'sqlite',
-        explanation:
-          'This finds the ten customers who have spent the most across all their orders, valuing each order line as quantity times unit price.',
-        created_at: ago(30),
-      },
-    ],
   };
 }
 
 let store: Store = seed();
-let counter = 0;
 
 /** Reset the store (tests). */
 export function resetMockStore(): void {
   store = seed();
-  counter = 0;
 }
 
 const summary = (thread_id: string, t: MockThread): ThreadSummary => ({
@@ -166,26 +133,6 @@ export function mockDeleteThread(id: string): void {
   store.threads.delete(id);
 }
 
-export function mockRenameThread(id: string, title: string): ThreadSummary {
-  const t = threadOr404(id);
-  t.title = title.trim().slice(0, 120) || t.title;
-  t.updated_at = new Date().toISOString();
-  return summary(id, t);
-}
-
-export function mockDuplicateThread(id: string): ThreadSummary {
-  const t = threadOr404(id);
-  const copy: MockThread = {
-    ...t,
-    title: `${t.title} (copy)`,
-    updated_at: new Date().toISOString(),
-    messages: t.messages.map((m) => ({ ...m })),
-  };
-  const newId = `mock-copy-${++counter}-${Date.now().toString(36)}`;
-  store.threads.set(newId, copy);
-  return summary(newId, copy);
-}
-
 /** Persist one finished mock turn the way the backend would (with a generated title). */
 export function recordMockTurn(
   req: ChatRequest,
@@ -211,86 +158,20 @@ export function recordMockTurn(
   threads.set(req.thread_id, t);
 }
 
-export function mockListSaved(): SavedQuery[] {
-  return [...store.saved].sort((a, b) => b.created_at.localeCompare(a.created_at));
+// ---- Workbench: /api/tables, preview, /api/query/run ---------------------------------------
+
+export function mockTables(): TablesResponse {
+  return { tables: MOCK_TABLES };
 }
 
-export function mockCreateSaved(input: SavedQueryInput): SavedQuery {
-  const item: SavedQuery = {
-    ...input,
-    id: `mock-saved-${++counter}`,
-    created_at: new Date().toISOString(),
-  };
-  store.saved.push(item);
-  return item;
+export function mockPreview(name: string, limit: number, offset: number): PreviewResponse {
+  const table = tableInfo(name);
+  if (!table) throw new MockHttpError(404, 'That table does not exist.');
+  const size = Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
+  return previewMock(table, size, Math.max(Math.trunc(offset) || 0, 0));
 }
 
-export function mockDeleteSaved(id: string): void {
-  if (!store.saved.some((q) => q.id === id)) throw new MockHttpError(404, 'Saved query not found');
-  store.saved = store.saved.filter((q) => q.id !== id);
-}
-
-// ---- /api/execute ------------------------------------------------------------------
-
-const KNOWN_RESULTS: [string, ResultEvent][] = [
-  [SQL.employees2024, EMPLOYEES_2024],
-  [SQL.monthlyRevenue, MONTHLY_REVENUE],
-  [SQL.topCustomers, TOP_CUSTOMERS],
-  [SQL.customers, CUSTOMERS],
-  [SQL.caCustomers, CA_CUSTOMERS],
-  [SQL.debugFixed, ABOVE_AVERAGE],
-  [SQL.optimized, PENDING_ORDERS],
-];
-
-const squash = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-
-function resultFor(sql: string): ResultEvent {
-  const exact = KNOWN_RESULTS.find(([known]) => squash(known) === squash(sql));
-  if (exact) return exact[1];
-  const lower = sql.toLowerCase();
-  if (/revenue|sum\(/.test(lower) && /month|strftime/.test(lower)) return MONTHLY_REVENUE;
-  if (/customers/.test(lower) && /california/.test(lower)) return CA_CUSTOMERS;
-  if (/orderitems/.test(lower) && /customers/.test(lower)) return TOP_CUSTOMERS;
-  if (/\bfrom\s+customers\b/.test(lower)) return CUSTOMERS;
-  if (/\bfrom\s+orders\b/.test(lower)) return PENDING_ORDERS;
-  if (/avg\(/.test(lower)) return ABOVE_AVERAGE;
-  if (/\bfrom\s+employees\b/.test(lower)) return EMPLOYEES_2024;
-  return { columns: ['result'], rows: [[42]], row_count: 1, truncated: false };
-}
-
-/** Deterministic "validator + read-only execution" stand-in. Destructive SQL is never run. */
-export function mockExecute({ sql, dialect }: ExecuteRequest): ExecuteResponse {
-  const fail = (error: string, check: string): ExecuteResponse => ({
-    ok: false,
-    sql,
-    errors: [error],
-    warnings: [],
-    validation: passingValidation(dialect).map((v) =>
-      v.check === check ? { ...v, status: 'fail', detail: error.replace(/^[A-Z_]+:\s*/, '') } : v,
-    ),
-    inspection: null,
-    result: null,
-  });
-  if (DESTRUCTIVE_RE.test(sql)) {
-    return fail('DESTRUCTIVE: Only read-only SELECT queries can be run.', 'read_only');
-  }
-  if (!/^\s*(select|with)\b/i.test(sql)) {
-    return fail('NOT_SELECT: Only SELECT statements can be run.', 'read_only');
-  }
-  if (/;\s*\S/.test(sql)) {
-    return fail('MULTI: Run one statement at a time.', 'single');
-  }
-  const unknown = referencedTables(sql).find((t) => !knownTable(t));
-  if (unknown) {
-    return fail(`UNKNOWN_TABLE: table '${unknown}' does not exist.`, 'tables');
-  }
-  return {
-    ok: true,
-    sql,
-    errors: [],
-    warnings: [],
-    validation: passingValidation(dialect),
-    inspection: inspectSql(sql),
-    result: resultFor(sql),
-  };
+export function mockRun({ sql, dialect, limit, offset }: RunRequest): RunResponse {
+  const size = Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
+  return runMock(sql, size, Math.max(Math.trunc(offset) || 0, 0), dialect);
 }

@@ -1,4 +1,5 @@
-// Types for the backend API contract (REQUIREMENTS.md §4). Field names match the wire format.
+// Types for the backend API contract (REQUIREMENTS.md §4, docs/API_ADDITIONS.md and
+// docs/BACKEND-CHANGES-v2.md). Field names match the wire format.
 
 export type Dialect = 'sqlite' | 'postgres' | 'mysql';
 
@@ -19,6 +20,8 @@ export interface ChatRequest {
   message: string;
   dialect: Dialect;
   execute: boolean;
+  /** v2: the SQL editor's contents; omitted when the editor is blank. */
+  current_sql?: string;
 }
 
 export interface ThreadSummary {
@@ -46,65 +49,66 @@ export interface ThreadDetail {
   last_sql: string | null;
 }
 
-export interface SchemaColumn {
-  name: string;
-  type: string;
-  doc: string;
-  /** API additions v1.1; absent on older backends. */
-  pk?: boolean;
-  nullable?: boolean;
-}
-
-export interface SchemaForeignKey {
-  column: string;
-  ref_table: string;
-  ref_column: string;
-}
-
-export interface SchemaTable {
-  name: string;
-  columns: SchemaColumn[];
-  foreign_keys: SchemaForeignKey[];
-}
-
-export interface SchemaResponse {
-  tables: SchemaTable[];
-}
-
 export interface HealthResponse {
   status: 'ok';
 }
 
-// ---- v1.1 REST additions (docs/API_ADDITIONS.md) ---------------------------
+// ---- v2 workbench endpoints (docs/BACKEND-CHANGES-v2.md §2) -------------------------
 
-export interface ExecuteRequest {
+export interface ForeignKeyRef {
+  table: string;
+  column: string;
+}
+
+export interface TableColumn {
+  name: string;
+  type: string;
+  pk: boolean;
+  fk: ForeignKeyRef | null;
+  doc: string;
+  nullable?: boolean;
+}
+
+export interface TableInfo {
+  name: string;
+  row_count: number;
+  columns: TableColumn[];
+}
+
+export interface TablesResponse {
+  tables: TableInfo[];
+}
+
+export type CellValue = string | number | boolean | null;
+
+/** One page of rows, as returned by the preview endpoint and a successful query run. */
+export interface PageData {
+  sql: string;
+  columns: string[];
+  rows: CellValue[][];
+  row_count: number;
+  total: number;
+  limit: number;
+  offset: number;
+  elapsed_ms: number;
+}
+
+/** GET /api/tables/{name}/preview */
+export type PreviewResponse = PageData;
+
+export interface RunRequest {
   sql: string;
   dialect: Dialect;
+  limit: number;
+  offset: number;
 }
 
-export interface ExecuteResponse {
-  ok: boolean;
-  sql: string;
-  /** `CATEGORY: message` strings when `ok` is false. */
-  errors: string[];
-  warnings: string[];
-  validation: ValidationCheck[];
-  inspection: QueryInspection | null;
-  result: ResultEvent | null;
-}
-
-export interface SavedQueryInput {
-  title: string;
-  prompt: string;
-  sql: string;
-  dialect: Dialect;
-  explanation: string;
-}
-
-export interface SavedQuery extends SavedQueryInput {
-  id: string;
-  created_at: string;
-}
+/** POST /api/query/run — always HTTP 200, discriminated by `status`. */
+export type RunResponse =
+  | ({ status: 'ok'; warnings: string[]; executed_sql?: string | null } & PageData)
+  | { status: 'invalid'; errors: string[]; warnings: string[] }
+  | { status: 'refused'; text: string }
+  | { status: 'error'; text: string; executed_sql?: string | null };
 
 // ---- SSE events -----------------------------------------------------------
 
@@ -159,15 +163,21 @@ export interface SqlEvent {
   modified_previous?: boolean;
   /** The user's own SQL for optimize / debug turns. */
   original_sql?: string | null;
+  /** For PostgreSQL / MySQL: the translated SQLite that ran on the demo database. */
+  executed_sql?: string | null;
 }
-
-export type CellValue = string | number | boolean | null;
 
 export interface ResultEvent {
   columns: string[];
   rows: CellValue[][];
   row_count: number;
   truncated: boolean;
+  /** v2 pagination info; optional so an older backend still renders a single page. */
+  total?: number;
+  limit?: number;
+  offset?: number;
+  /** Set when a PostgreSQL / MySQL query uses a feature the SQLite demo database lacks. */
+  error?: string;
 }
 
 export interface TokenEvent {

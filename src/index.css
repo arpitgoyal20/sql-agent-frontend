@@ -154,6 +154,25 @@ html:not(.dark) {
   .fade-in {
     animation: fade-in 160ms ease-out;
   }
+
+  /* Indeterminate thin bar on top of the grid while a query runs. */
+  .progress-bar::after {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 35%;
+    background: rgb(var(--accent));
+    animation: progress-slide 1.1s ease-in-out infinite;
+  }
+}
+
+@keyframes progress-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
 }
 
 @keyframes toast-in {

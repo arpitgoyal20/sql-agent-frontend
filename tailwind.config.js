@@ -24,6 +24,15 @@ export default {
           strong: token('accent-strong'),
           fg: token('accent-fg'),
         },
+        sql: {
+          keyword: token('sql-keyword'),
+          function: token('sql-function'),
+          string: token('sql-string'),
+          number: token('sql-number'),
+          comment: token('sql-comment'),
+          punct: token('sql-punct'),
+          text: token('sql-text'),
+        },
       },
       fontFamily: {
         sans: [

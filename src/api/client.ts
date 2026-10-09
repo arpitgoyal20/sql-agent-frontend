@@ -1,14 +1,15 @@
 // Base URL and small fetch helpers for every REST endpoint.
-// In mock mode (VITE_MOCK=true) the same functions are served from memory by mockRest.ts.
+// In mock mode (VITE_MOCK=true) the same functions are served from memory by mockRest.ts, which
+// is loaded on demand so it never weighs on the production bundle.
+// Every request except GET /api/health carries the `X-Client-Id` header (see clientId.ts).
 
-import * as mock from './mockRest';
+import { CLIENT_ID_HEADER, getClientId } from './clientId';
 import type {
-  ExecuteRequest,
-  ExecuteResponse,
+  Dialect,
   HealthResponse,
-  SavedQuery,
-  SavedQueryInput,
-  SchemaResponse,
+  PreviewResponse,
+  RunResponse,
+  TablesResponse,
   ThreadDetail,
   ThreadSummary,
 } from './types';
@@ -62,7 +63,13 @@ function statusText(status: number): string {
 
 /** Human-readable text from a FastAPI error body (`{detail: string | [{msg}]}`). */
 function detailText(body: unknown): string | null {
-  if (!body || typeof body !== 'object' || !('detail' in body)) return null;
+  if (!body || typeof body !== 'object') return null;
+  if ('error' in body && (body as { error: unknown }).error === 'UNKNOWN_TABLE') {
+    const available = (body as { available?: unknown }).available;
+    const list = Array.isArray(available) ? ` Available tables: ${available.join(', ')}.` : '';
+    return `That table does not exist.${list}`;
+  }
+  if (!('detail' in body)) return null;
   const detail = (body as { detail: unknown }).detail;
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail)) {
@@ -77,11 +84,17 @@ function detailText(body: unknown): string | null {
 interface RequestOptions {
   method?: string;
   body?: unknown;
+  /** Send `X-Client-Id` (every endpoint except /api/health). */
+  identify?: boolean;
 }
 
-async function request<T>(path: string, { method = 'GET', body }: RequestOptions = {}) {
+async function request<T>(
+  path: string,
+  { method = 'GET', body, identify = true }: RequestOptions = {},
+) {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (identify) headers[CLIENT_ID_HEADER] = getClientId();
   let response: Response;
   try {
     response = await fetch(apiUrl(path), {
@@ -105,18 +118,23 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
   return json as T;
 }
 
+type MockRest = typeof import('./mockRest');
+
 /** Run a mock endpoint with fake latency, mapping its errors like the real client does. */
-function viaMock<T>(fn: () => T): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    setTimeout(() => {
-      try {
-        resolve(fn());
-      } catch (err) {
-        if (err instanceof mock.MockHttpError) reject(new HttpError(err.status, err.message));
-        else reject(err);
-      }
-    }, mockRestTiming.delayMs);
-  });
+function viaMock<T>(fn: (mock: MockRest) => T): Promise<T> {
+  return import('./mockRest').then(
+    (mock) =>
+      new Promise<T>((resolve, reject) => {
+        setTimeout(() => {
+          try {
+            resolve(fn(mock));
+          } catch (err) {
+            if (err instanceof mock.MockHttpError) reject(new HttpError(err.status, err.message));
+            else reject(err);
+          }
+        }, mockRestTiming.delayMs);
+      }),
+  );
 }
 
 const enc = encodeURIComponent;
@@ -125,62 +143,53 @@ const enc = encodeURIComponent;
 
 export function getHealth(): Promise<HealthResponse> {
   if (isMockMode()) return viaMock(() => ({ status: 'ok' as const }));
-  return request<HealthResponse>('/api/health');
+  return request<HealthResponse>('/api/health', { identify: false });
 }
 
 // ---- Threads ------------------------------------------------------------------------
 
 export function getThreads(): Promise<ThreadSummary[]> {
-  if (isMockMode()) return viaMock(() => mock.mockListThreads());
+  if (isMockMode()) return viaMock((mock) => mock.mockListThreads());
   return request<ThreadSummary[]>('/api/threads');
 }
 
 export function getThread(threadId: string): Promise<ThreadDetail> {
-  if (isMockMode()) return viaMock(() => mock.mockGetThread(threadId));
+  if (isMockMode()) return viaMock((mock) => mock.mockGetThread(threadId));
   return request<ThreadDetail>(`/api/threads/${enc(threadId)}`);
 }
 
 export function deleteThread(threadId: string): Promise<void> {
-  if (isMockMode()) return viaMock(() => mock.mockDeleteThread(threadId));
+  if (isMockMode()) return viaMock((mock) => mock.mockDeleteThread(threadId));
   return request<void>(`/api/threads/${enc(threadId)}`, { method: 'DELETE' });
 }
 
-export function renameThread(threadId: string, title: string): Promise<ThreadSummary> {
-  if (isMockMode()) return viaMock(() => mock.mockRenameThread(threadId, title));
-  return request<ThreadSummary>(`/api/threads/${enc(threadId)}`, {
-    method: 'PATCH',
-    body: { title },
+// ---- Workbench (v2): tables, preview, run -------------------------------------------
+
+export function getTables(): Promise<TablesResponse> {
+  if (isMockMode()) return viaMock((mock) => mock.mockTables());
+  return request<TablesResponse>('/api/tables');
+}
+
+export function previewTable(
+  name: string,
+  limit: number,
+  offset: number,
+): Promise<PreviewResponse> {
+  if (isMockMode()) return viaMock((mock) => mock.mockPreview(name, limit, offset));
+  return request<PreviewResponse>(
+    `/api/tables/${enc(name)}/preview?limit=${limit}&offset=${offset}`,
+  );
+}
+
+export function runQuery(
+  sql: string,
+  dialect: Dialect,
+  limit: number,
+  offset: number,
+): Promise<RunResponse> {
+  if (isMockMode()) return viaMock((mock) => mock.mockRun({ sql, dialect, limit, offset }));
+  return request<RunResponse>('/api/query/run', {
+    method: 'POST',
+    body: { sql, dialect, limit, offset },
   });
-}
-
-export function duplicateThread(threadId: string): Promise<ThreadSummary> {
-  if (isMockMode()) return viaMock(() => mock.mockDuplicateThread(threadId));
-  return request<ThreadSummary>(`/api/threads/${enc(threadId)}/duplicate`, { method: 'POST' });
-}
-
-// ---- Schema, execute, saved queries ---------------------------------------------------
-
-export function getSchema(): Promise<SchemaResponse> {
-  if (isMockMode()) return viaMock(() => mock.MOCK_SCHEMA);
-  return request<SchemaResponse>('/api/schema');
-}
-
-export function executeSql(body: ExecuteRequest): Promise<ExecuteResponse> {
-  if (isMockMode()) return viaMock(() => mock.mockExecute(body));
-  return request<ExecuteResponse>('/api/execute', { method: 'POST', body });
-}
-
-export function getSaved(): Promise<SavedQuery[]> {
-  if (isMockMode()) return viaMock(() => mock.mockListSaved());
-  return request<SavedQuery[]>('/api/saved');
-}
-
-export function createSaved(input: SavedQueryInput): Promise<SavedQuery> {
-  if (isMockMode()) return viaMock(() => mock.mockCreateSaved(input));
-  return request<SavedQuery>('/api/saved', { method: 'POST', body: input });
-}
-
-export function deleteSaved(id: string): Promise<void> {
-  if (isMockMode()) return viaMock(() => mock.mockDeleteSaved(id));
-  return request<void>(`/api/saved/${enc(id)}`, { method: 'DELETE' });
 }
